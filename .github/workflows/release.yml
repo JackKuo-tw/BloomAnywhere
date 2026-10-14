@@ -1,0 +1,125 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos:
+    name: Build macOS (Universal + arm64 + x64)
+    runs-on: macos-14
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+
+      - name: Build release binaries
+        run: |
+          cargo build --release --target aarch64-apple-darwin -p bloomanywhere
+          cargo build --release --target x86_64-apple-darwin -p bloomanywhere
+
+      - name: Package Universal Bundle (runs natively on ALL Macs)
+        run: |
+          mkdir -p BloomAnywhere.app/Contents/MacOS BloomAnywhere.app/Contents/Resources
+          cp packaging/macos/Info.plist BloomAnywhere.app/Contents/Info.plist
+          lipo -create -output BloomAnywhere.app/Contents/MacOS/BloomAnywhere \
+            target/aarch64-apple-darwin/release/bloomanywhere \
+            target/x86_64-apple-darwin/release/bloomanywhere
+          chmod +x BloomAnywhere.app/Contents/MacOS/BloomAnywhere BloomAnywhere.command
+          codesign --force --deep -s - BloomAnywhere.app
+          zip -r BloomAnywhere-macos-universal.zip BloomAnywhere.app BloomAnywhere.command README.md
+
+      - name: Package arm64 Bundle (Apple Silicon)
+        run: |
+          cp target/aarch64-apple-darwin/release/bloomanywhere BloomAnywhere.app/Contents/MacOS/BloomAnywhere
+          chmod +x BloomAnywhere.app/Contents/MacOS/BloomAnywhere BloomAnywhere.command
+          codesign --force --deep -s - BloomAnywhere.app
+          zip -r BloomAnywhere-macos-arm64.zip BloomAnywhere.app BloomAnywhere.command README.md
+
+      - name: Package x64 Bundle (Intel)
+        run: |
+          cp target/x86_64-apple-darwin/release/bloomanywhere BloomAnywhere.app/Contents/MacOS/BloomAnywhere
+          chmod +x BloomAnywhere.app/Contents/MacOS/BloomAnywhere BloomAnywhere.command
+          codesign --force --deep -s - BloomAnywhere.app
+          zip -r BloomAnywhere-macos-x64.zip BloomAnywhere.app BloomAnywhere.command README.md
+
+      - name: Upload macOS Artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: macos-bundles
+          path: BloomAnywhere-macos-*.zip
+
+      - name: Publish macOS to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v3
+        with:
+          files: |
+            BloomAnywhere-macos-universal.zip
+            BloomAnywhere-macos-arm64.zip
+            BloomAnywhere-macos-x64.zip
+
+  build-other:
+    name: Build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact_name: BloomAnywhere-linux-x64.tar.gz
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact_name: BloomAnywhere-windows-x64.zip
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libssl-dev cmake build-essential
+
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }} -p bloomanywhere
+
+      - name: Package Windows Bundle
+        if: runner.os == 'Windows'
+        run: |
+          copy target\${{ matrix.target }}\release\bloomanywhere.exe BloomAnywhere.exe
+          Compress-Archive -Path BloomAnywhere.exe, BloomAnywhere.bat, README.md -DestinationPath ${{ matrix.artifact_name }}
+
+      - name: Package Linux Bundle
+        if: runner.os == 'Linux'
+        run: |
+          cp target/${{ matrix.target }}/release/bloomanywhere bloomanywhere
+          chmod +x bloomanywhere BloomAnywhere.sh
+          tar -czvf ${{ matrix.artifact_name }} bloomanywhere BloomAnywhere.sh README.md
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.artifact_name }}
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v3
+        with:
+          files: ${{ matrix.artifact_name }}

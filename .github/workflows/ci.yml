@@ -1,0 +1,91 @@
+name: CI
+
+on:
+  push:
+    branches: [ "main", "master" ]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - ".gitignore"
+      - "LICENSE*"
+  pull_request:
+    branches: [ "main", "master" ]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - ".gitignore"
+      - "LICENSE*"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test-and-package:
+    name: Test & Package (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            artifact_name: BloomAnywhere-macos-arm64.zip
+          - os: ubuntu-latest
+            artifact_name: BloomAnywhere-linux-x64.tar.gz
+          - os: windows-latest
+            artifact_name: BloomAnywhere-windows-x64.zip
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libssl-dev cmake build-essential
+
+      - name: Rustfmt Check
+        run: cargo fmt --all -- --check
+
+      - name: Clippy Lint
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Run Tests
+        run: cargo test --workspace --verbose
+
+      - name: Build Release Binary
+        run: cargo build --release -p bloomanywhere
+
+      - name: Package macOS App Bundle
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p BloomAnywhere.app/Contents/MacOS BloomAnywhere.app/Contents/Resources
+          cp target/release/bloomanywhere BloomAnywhere.app/Contents/MacOS/BloomAnywhere
+          chmod +x BloomAnywhere.app/Contents/MacOS/BloomAnywhere BloomAnywhere.command
+          codesign --force --deep -s - BloomAnywhere.app
+          zip -r ${{ matrix.artifact_name }} BloomAnywhere.app BloomAnywhere.command README.md
+
+      - name: Package Windows Bundle
+        if: runner.os == 'Windows'
+        run: |
+          copy target\release\bloomanywhere.exe BloomAnywhere.exe
+          Compress-Archive -Path BloomAnywhere.exe, BloomAnywhere.bat, README.md -DestinationPath ${{ matrix.artifact_name }}
+
+      - name: Package Linux Bundle
+        if: runner.os == 'Linux'
+        run: |
+          cp target/release/bloomanywhere bloomanywhere
+          chmod +x bloomanywhere BloomAnywhere.sh
+          tar -czvf ${{ matrix.artifact_name }} bloomanywhere BloomAnywhere.sh README.md
+
+      - name: Upload CI Pre-built Artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.artifact_name }}

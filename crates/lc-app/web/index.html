@@ -1,0 +1,524 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>BloomAnywhere - GPS 定位模擬器</title>
+  <link rel="stylesheet" href="/vendor/leaflet/leaflet.css">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div id="app">
+    <!-- Top Bar -->
+    <header class="topbar">
+      <div class="logo-section">
+        <span class="logo-icon">🌸</span>
+        <span class="logo-title">BloomAnywhere</span>
+      </div>
+
+      <!-- Device Control -->
+      <div class="top-group device-group">
+        <span class="group-label">📱 裝置:</span>
+        <select id="deviceSelect" class="select-input">
+          <option value="">自動探測中...</option>
+        </select>
+        <button id="refreshDevicesBtn" class="icon-btn" title="重新整理裝置清單">🔄</button>
+        <button id="toggleConnectBtn" class="btn btn-connect">連線</button>
+        <span id="deviceStatusBadge" class="status-badge disconnected">未連線</span>
+      </div>
+
+      <!-- Search Box & Computer Locate -->
+      <div class="top-group search-group">
+        <div class="search-box-wrapper">
+          <input type="text" id="searchInput" class="search-input" placeholder="🔍 搜尋地名、地址或座標...">
+          <div id="searchResults" class="search-results dropdown-menu hidden"></div>
+        </div>
+        <button id="locateComputerBtn" class="btn btn-outline locate-computer-btn" title="快速取得目前電腦位置 (瀏覽器 / IP 定位)">💻 電腦位置</button>
+      </div>
+
+      <!-- Actions -->
+      <div class="top-group actions-group">
+        <button id="onboardingTourBtn" class="btn btn-outline" title="新手操作導覽教學">❓ 新手教學</button>
+        <button id="safetyGuideBtn" class="btn btn-outline" title="飛人安全指南與操作快捷鍵">💡 防封指南</button>
+        <button id="favoritesBtn" class="btn btn-outline" title="查看與管理我的最愛">⭐ 我的最愛</button>
+        <button id="restoreLocationBtn" class="btn btn-danger" title="還原手機真實 GPS 定位">📍 恢復真實定位</button>
+        <button id="mobilePanelToggleBtn" class="btn btn-outline mobile-only-btn" title="切換控制面板">📱 選單</button>
+      </div>
+    </header>
+
+    <!-- Main Container -->
+    <main class="main-container">
+      <!-- Left Panel: Mode Tabs & Controls -->
+      <aside class="control-panel">
+        <!-- Bloom Banner -->
+        <div id="bloomBanner" class="bloom-banner">
+          <div class="banner-header">
+            <span class="banner-title">🌸 Bloom 種花模式</span>
+            <span id="speedSafeBadge" class="speed-safe-badge safe">🌱 安全時速中 (≤20 km/h)</span>
+          </div>
+          <p id="bloomTipText" class="banner-tip">種花時速請勿超過 20 km/h，否則花朵將停止生長！</p>
+          <button id="openFlowerLoopModalBtn" class="btn btn-bloom btn-full">
+            🔄 繞圈種花路線生成器
+          </button>
+        </div>
+
+        <!-- Mode Navigation Tabs -->
+        <nav class="mode-tabs">
+          <button class="tab-btn active" data-tab="teleport">傳送</button>
+          <button class="tab-btn" data-tab="twospot">兩點路線</button>
+          <button class="tab-btn" data-tab="multispot">多點路線</button>
+          <button class="tab-btn" data-tab="jump">跳躍傳送</button>
+          <button class="tab-btn" data-tab="joystick">虛擬搖桿</button>
+        </nav>
+
+        <!-- Speed Control Section (Persistent across movement modes) -->
+        <div class="section speed-section" id="speedSection">
+          <div class="section-title-row">
+            <span class="section-title">🏃 移動時速: <b id="currentSpeedDisplay">5.5</b> km/h</span>
+            <span id="speedWarningText" class="speed-warning hidden">⚠️ 超過 20 km/h 種花將停滯</span>
+          </div>
+          <div class="speed-slider-row">
+            <input type="range" id="speedSlider" min="1" max="120" step="0.5" value="5.5" class="slider">
+          </div>
+          <div class="speed-presets" id="speedPresetsContainer">
+            <!-- Populated dynamically based on profile -->
+          </div>
+        </div>
+
+        <!-- Tab 1: 傳送 (Teleport) -->
+        <section id="tab-teleport" class="tab-content active">
+          <div class="card">
+            <h3>📍 瞬間傳送</h3>
+            <p class="hint-text">在右側地圖上點擊任意位置選擇目標，或直接輸入座標：</p>
+            <div class="coord-inputs">
+              <label>緯度 (Lat): <input type="number" step="0.000001" id="teleportLat" class="num-input"></label>
+              <label>經度 (Lng): <input type="number" step="0.000001" id="teleportLng" class="num-input"></label>
+            </div>
+            <div id="teleportDistEstimate" class="dist-estimate-text">尚未選擇目標點</div>
+            <div class="btn-group">
+              <button id="execTeleportBtn" class="btn btn-primary btn-full">🚀 立即傳送</button>
+              <button id="fillRealLocBtn" class="btn btn-outline" title="填入真實 GPS 座標">🎯 填入真實定位</button>
+              <button id="addTeleportFavBtn" class="btn btn-outline" title="將此點儲存到最愛">⭐ 收藏此點</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- Tab 2: 兩點路線 (Two-spot Route) -->
+        <section id="tab-twospot" class="tab-content">
+          <div class="card">
+            <div class="card-header-row">
+              <h3>🚶 兩點路網導航</h3>
+              <button id="clearTwoSpotBtn" class="btn-sm btn-outline">清空點位</button>
+            </div>
+            <p class="hint-text">點擊地圖設定終點，系統將自動沿著道路規劃路線：</p>
+            <div class="form-row">
+              <label>起點：<span id="twoSpotStartText" class="value-text">目前位置</span></label>
+            </div>
+            <div class="form-row">
+              <label>終點：<span id="twoSpotEndText" class="value-text">尚未選擇（請點地圖）</span></label>
+            </div>
+            <div class="form-row">
+              <label>貼路模式：</label>
+              <select id="twoSpotSnapSelect" class="select-input">
+                <option value="foot">🚶 步行道路 (建議種花)</option>
+                <option value="bike">🚲 自行車道</option>
+                <option value="car">🚗 行車道</option>
+                <option value="straight">📏 直線穿越</option>
+              </select>
+            </div>
+            <div class="form-row">
+              <label>往返方式：</label>
+              <select id="twoSpotModeSelect" class="select-input">
+                <option value="once">單次 (到終點即停止)</option>
+                <option value="loop">循環 (回到起點重複)</option>
+                <option value="round_trip">來回折返 (A↔B)</option>
+              </select>
+            </div>
+            <div class="form-row checkbox-row">
+              <label><input type="checkbox" id="twoSpotRealisticCheck" checked> 擬真人性化速度 (微幅浮動與 GPS 晃動)</label>
+            </div>
+            <div id="twoSpotRouteStats" class="route-stats">尚未規劃路線</div>
+            <div class="btn-group-grid">
+              <button id="twoSpotStartBtn" class="btn btn-primary" disabled>▶ 開始移動</button>
+              <button id="twoSpotPauseBtn" class="btn btn-secondary" disabled>⏸ 暫停</button>
+              <button id="twoSpotStopBtn" class="btn btn-danger" disabled>⏹ 停止</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- Tab 3: 多點路線 (Multi-spot Route) -->
+        <section id="tab-multispot" class="tab-content">
+          <div class="card">
+            <div class="card-header-row">
+              <h3>🗺️ 多點巡迴路線</h3>
+              <button id="clearWaypointsBtn" class="btn-sm btn-outline">清空點位</button>
+            </div>
+            <p class="hint-text">在地圖上依序點擊增加途經點，可規劃自訂走訪路線：</p>
+            
+            <div class="waypoint-list-box" id="waypointListBox">
+              <div class="empty-list-hint">點擊地圖添加巡航途經點...</div>
+            </div>
+
+            <div class="form-row">
+              <label>貼路模式：</label>
+              <select id="multiSpotSnapSelect" class="select-input">
+                <option value="foot">🚶 步行道路</option>
+                <option value="bike">🚲 自行車道</option>
+                <option value="car">🚗 行車道</option>
+                <option value="straight">📏 直線路徑</option>
+              </select>
+            </div>
+            <div class="form-row">
+              <label>巡迴方式：</label>
+              <select id="multiSpotModeSelect" class="select-input">
+                <option value="loop">循環繞圈 (Loop)</option>
+                <option value="round_trip">來回折返 (Round Trip)</option>
+                <option value="once">單程一次 (Once)</option>
+              </select>
+            </div>
+            <div class="form-row checkbox-row">
+              <label><input type="checkbox" id="multiSpotRealisticCheck" checked> 擬真人性化速度</label>
+            </div>
+            <div id="multiSpotRouteStats" class="route-stats">途經點數: 0</div>
+            
+            <div class="btn-group-grid">
+              <button id="multiSpotStartBtn" class="btn btn-primary" disabled>▶ 開始移動</button>
+              <button id="multiSpotPauseBtn" class="btn btn-secondary" disabled>⏸ 暫停</button>
+              <button id="multiSpotStopBtn" class="btn btn-danger" disabled>⏹ 停止</button>
+            </div>
+
+            <div class="gpx-actions-row">
+              <button id="exportGpxBtn" class="btn btn-sm btn-outline" disabled>💾 匯出 GPX</button>
+              <label class="btn btn-sm btn-outline file-label">
+                📂 匯入 GPX
+                <input type="file" id="importGpxInput" accept=".gpx" class="hidden">
+              </label>
+              <button id="saveMultiRouteFavBtn" class="btn btn-sm btn-outline" disabled>⭐ 存為最愛</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- Tab 4: 跳躍傳送 (Jump Teleport) -->
+        <section id="tab-jump" class="tab-content">
+          <div class="card">
+            <div class="card-header-row">
+              <h3>🦘 跳躍傳送 (Jump Teleport)</h3>
+              <button id="clearJumpPointsBtn" class="btn-sm btn-outline">清空點位</button>
+            </div>
+            <p class="hint-text">預先排定多個跳躍目標，並支援冷卻計時完畢自動跳往下一站：</p>
+            
+            <div class="waypoint-list-box" id="jumpListBox">
+              <div class="empty-list-hint">點擊地圖添加跳躍站點...</div>
+            </div>
+
+            <div class="form-row checkbox-row auto-jump-row">
+              <label class="auto-jump-label">
+                <input type="checkbox" id="autoJumpCheck" checked>
+                <span class="highlight-text">⏱️ 冷卻完畢自動跳躍下一站</span>
+              </label>
+            </div>
+
+            <div id="jumpStatusText" class="route-stats">尚無跳躍點</div>
+
+            <div class="btn-group-grid">
+              <button id="jumpNextBtn" class="btn btn-primary" disabled>⏭ 跳至下一站</button>
+              <button id="jumpStopBtn" class="btn btn-secondary" disabled>⏹ 停止自動跳躍</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- Tab 5: 虛擬搖桿 (Joystick) -->
+        <section id="tab-joystick" class="tab-content">
+          <div class="card joystick-card">
+            <h3>🎮 虛擬搖桿控制</h3>
+            <p class="hint-text">支援螢幕搖桿拖曳、點擊方向鍵，或使用鍵盤 <b>W / A / S / D</b> 與 <b>方向鍵</b>：</p>
+
+            <!-- Virtual Joystick Touch Area -->
+            <div class="joystick-container">
+              <div class="joystick-base" id="joystickBase">
+                <div class="joystick-thumb" id="joystickThumb"></div>
+              </div>
+            </div>
+
+            <!-- Directional Buttons Grid -->
+            <div class="dpad-grid">
+              <div></div>
+              <button class="dpad-btn" id="dpadUp" data-dir="0">▲<br><small>W</small></button>
+              <div></div>
+              <button class="dpad-btn" id="dpadLeft" data-dir="270">◀<br><small>A</small></button>
+              <button class="dpad-btn center-btn" id="dpadStop">⏹<br><small>停</small></button>
+              <button class="dpad-btn" id="dpadRight" data-dir="90">▶<br><small>D</small></button>
+              <div></div>
+              <button class="dpad-btn" id="dpadDown" data-dir="180">▼<br><small>S</small></button>
+              <div></div>
+            </div>
+
+            <div class="joystick-info">
+              <span>當前朝向：<b id="joystickHeadingDisplay">0°</b> (北)</span>
+              <span>狀態：<b id="joystickActiveDisplay">閒置中</b></span>
+            </div>
+          </div>
+        </section>
+      </aside>
+
+      <!-- Center / Right: Interactive Map -->
+      <section class="map-container">
+        <div id="map"></div>
+
+        <!-- Cooldown Floating Notification Widget -->
+        <div id="cooldownWidget" class="cooldown-widget hidden">
+          <div class="cooldown-header">
+            <span class="cooldown-icon">⏳</span>
+            <span class="cooldown-title">安全冷卻計時中</span>
+          </div>
+          <div class="cooldown-timer" id="cooldownTimeDisplay">00:00</div>
+          <div class="cooldown-info">
+            跳躍距離: <span id="cooldownDistDisplay">0</span> km
+          </div>
+          <div class="cooldown-progress-bar">
+            <div class="cooldown-progress-fill" id="cooldownProgressFill"></div>
+          </div>
+          <div class="cooldown-subtext">請等待冷卻結束後再進行遊戲互動以避免被偵測</div>
+        </div>
+
+        <!-- Map Floating Status Bar -->
+        <div class="map-status-bar">
+          <div class="status-item">
+            <span class="lbl">📍 模擬座標:</span>
+            <span class="val" id="statusCoordVal">未設定</span>
+          </div>
+          <div class="status-item">
+            <span class="lbl">🧭 朝向:</span>
+            <span class="val" id="statusHeadingVal">0°</span>
+          </div>
+          <div class="status-item">
+            <span class="lbl">⚡ 狀態:</span>
+            <span class="val" id="statusModeVal">閒置</span>
+          </div>
+          <div class="status-item">
+            <span class="lbl">🔄 推送次數:</span>
+            <span class="val" id="statusPushesVal">0</span>
+          </div>
+          <div class="status-item" id="lapStatusItem">
+            <span class="lbl">🏁 圈數進度:</span>
+            <span class="val" id="statusLapVal">-</span>
+          </div>
+        </div>
+        <!-- Mobile Floating Toggle Button -->
+        <button id="mobileFloatingPanelBtn" class="floating-mobile-btn mobile-only-btn" title="開啟控制面板">⚙️ 面板</button>
+      </section>
+    </main>
+
+    <!-- Modal: Flower Loop Generator -->
+    <div id="flowerLoopModal" class="modal hidden">
+      <div class="modal-backdrop"></div>
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3>🌸 繞圈種花路線生成器</h3>
+          <button class="modal-close-btn" id="closeFlowerLoopModalBtn">&times;</button>
+        </div>
+        <div class="modal-body">
+          <p class="modal-hint">在目前位置周圍自動產生圓形巡迴路徑，地圖上將即時顯示虛線範圍預覽：</p>
+          <div class="form-row">
+            <label>圓圈半徑：</label>
+            <div class="radius-presets">
+              <button class="btn-sm radius-preset-btn active" data-radius="150">150 米</button>
+              <button class="btn-sm radius-preset-btn" data-radius="250">250 米</button>
+              <button class="btn-sm radius-preset-btn" data-radius="400">400 米</button>
+              <button class="btn-sm radius-preset-btn" data-radius="600">600 米</button>
+            </div>
+            <div class="custom-radius-input">
+              自訂半徑 (米): <input type="number" id="flowerRadiusInput" value="150" min="50" max="2000" class="num-input">
+            </div>
+          </div>
+          <div class="form-row">
+            <label>圓周採樣點數：</label>
+            <input type="number" id="flowerPointsCountInput" value="18" min="8" max="64" class="num-input">
+            <small class="text-muted">（點數越多路徑越圓滑自然）</small>
+          </div>
+
+          <!-- Live Loop & Cooldown Efficiency Calculator -->
+          <div class="flower-loop-calc-card">
+            <div class="calc-row">
+              <span class="calc-label">📏 巡迴周長：</span>
+              <strong id="flowerCircumferenceText" class="calc-val">約 942 公尺</strong>
+            </div>
+            <div class="calc-row">
+              <span class="calc-label">⏱️ 預估單圈耗時：</span>
+              <strong id="flowerLapTimeText" class="calc-val">約 10 分 16 秒 (時速 5.5 km/h)</strong>
+            </div>
+            <div id="flowerCooldownBadge" class="flower-cooldown-badge safe">
+              ✅ 單圈超過 5 分鐘！符合網格種花冷卻重置機制，花瓣播種效率 100%
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button id="cancelFlowerLoopBtn" class="btn btn-outline">取消</button>
+          <button id="applyFlowerLoopBtn" class="btn btn-bloom">🌸 套用並開始循環種花</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Modal: Safe Restore Location Confirmation (Anti-Rubberband) -->
+    <div id="safeRestoreModal" class="modal hidden">
+      <div class="modal-backdrop"></div>
+      <div class="modal-content modal-warning">
+        <div class="modal-header">
+          <h3>⚠️ 安全警告：防橡皮筋回彈 (Anti-Rubberband)</h3>
+          <button class="modal-close-btn" id="closeSafeRestoreModalBtn">&times;</button>
+        </div>
+        <div class="modal-body">
+          <div class="warning-callout">
+            <span class="warning-icon">🚨</span>
+            <div>
+              <strong>還原定位前，請務必先強制完全關閉手機上的遊戲！</strong>
+              <p>請在手機上打開多工視窗，將遊戲 App（如種花、AR 遊戲）向上滑動完全退出關閉。</p>
+            </div>
+          </div>
+          <p class="modal-desc">
+            <b>【為什麼這很重要？】</b><br>
+            若遊戲仍在背景或前景運行時瞬間清除模擬，手機 GPS 將以數萬公里時速「彈回」您的真實所在地。此瞬移會被伺服器記錄為重大位置異常，極易觸發軟鎖或警告信！
+          </p>
+          <div class="modal-checkbox-row">
+            <label>
+              <input type="checkbox" id="confirmGameClosedCheckbox">
+              <span>我已確認手機上的遊戲 App 已完全關閉退出</span>
+            </label>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button id="cancelRestoreBtn" class="btn btn-outline">取消</button>
+          <button id="confirmRestoreBtn" class="btn btn-danger" disabled>📍 確認還原真實 GPS 定位</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Modal: Safety & Anti-Ban Guide -->
+    <div id="safetyGuideModal" class="modal hidden">
+      <div class="modal-backdrop"></div>
+      <div class="modal-content modal-lg">
+        <div class="modal-header">
+          <h3>🛡️ 飛人安全手冊與操作百科</h3>
+          <button class="modal-close-btn" id="closeSafetyGuideModalBtn">&times;</button>
+        </div>
+        <div class="modal-body guide-modal-body">
+          <div class="guide-tabs">
+            <button class="guide-tab-btn active" data-guidetab="bloom">🌸 種花防封守則</button>
+            <button class="guide-tab-btn" data-guidetab="cooldown">⏳ 冷卻時間速查</button>
+            <button class="guide-tab-btn" data-guidetab="steps">🚶 步數 vs GPS 雙軌機制</button>
+            <button class="guide-tab-btn" data-guidetab="hotkeys">⌨️ 鍵盤快捷鍵一覽</button>
+          </div>
+          <div class="guide-content" id="guideTabContent">
+            <!-- Dynamic Content populated by JS -->
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button id="closeSafetyGuideBtn" class="btn btn-primary">了解並關閉</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Modal: Favorites Manager -->
+    <div id="favoritesModal" class="modal hidden">
+      <div class="modal-backdrop"></div>
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3>⭐ 我的最愛地點與路線</h3>
+          <button class="modal-close-btn" id="closeFavoritesModalBtn">&times;</button>
+        </div>
+        <div class="modal-body">
+          <div class="favorites-list" id="favoritesList">
+            <div class="empty-list-hint">目前無儲存的最愛地點。可以在傳送或多點路線中點擊「收藏」加入！</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Modal: First-Time User Onboarding Tutorial -->
+    <div id="onboardingModal" class="modal hidden">
+      <div class="modal-backdrop"></div>
+      <div class="modal-content modal-onboarding">
+        <div class="modal-header">
+          <h3>🌱 歡迎使用 BloomAnywhere！新手引導教學</h3>
+          <button class="modal-close-btn" id="closeOnboardingModalBtn">&times;</button>
+        </div>
+        <div class="modal-body onboarding-body">
+          <!-- Step 1 -->
+          <div class="onboarding-step active" data-step="1">
+            <div class="onboarding-icon">🌸</div>
+            <h4>純 Rust 打造的 Bloom 專用虛擬定位工具</h4>
+            <p>
+              BloomAnywhere 是專為各類大地遊戲與種花 App 深度打造的定位巡航系統。免越獄、免裝虛擬網卡驅動、無肥大桌面框架，能在電腦瀏覽器甚至手機上輕鬆遙控！
+            </p>
+            <div class="onboarding-tip-box">
+              ✨ <b>核心特色</b>：支援 iOS 17+ 原生 DVT 協定、OSRM 路網貼齊導航、以及 5 分鐘網格冷卻計算器。
+            </div>
+          </div>
+
+          <!-- Step 2 -->
+          <div class="onboarding-step" data-step="2">
+            <div class="onboarding-icon">📱</div>
+            <h4>手機連線與螢幕解鎖提示（重要！）</h4>
+            <p>
+              將 iPhone 或 Android 裝置以傳輸線連接至電腦。<b>系統會在背景自動偵測</b>，無需手動狂按重新整理！
+            </p>
+            <div class="onboarding-warning-box">
+              🔑 <b>重要提醒</b>：<br>
+              1. 請務必<b>解鎖手機螢幕</b>，並在手機彈出視窗時<b>輸入密碼並點選「信任此電腦」</b>。<br>
+              2. iOS 17+ 需在手機「設定 > 隱私權與安全性 > 開發者模式」開啟並重開機。<br>
+              3. 偵測到手機後點擊「連線」即可開始模擬。
+            </div>
+          </div>
+
+          <!-- Step 3 -->
+          <div class="onboarding-step" data-step="3">
+            <div class="onboarding-icon">🗺️</div>
+            <h4>搜尋地名與一鍵取得電腦位置</h4>
+            <p>
+              頂部中央提供即時地址搜尋框，支援全球地名、地址與經緯度座標。
+            </p>
+            <div class="onboarding-tip-box">
+              💻 <b>電腦目前位置</b>：點擊搜尋框右側的「<b>💻 電腦位置</b>」按鈕，即可瞬間透過瀏覽器/IP 定位抓取您電腦目前的真實位置並移至地圖中央！
+            </div>
+          </div>
+
+          <!-- Step 4 -->
+          <div class="onboarding-step" data-step="4">
+            <div class="onboarding-icon">🔄</div>
+            <h4>Bloom 特化：繞圈種花與防封禁黃金法則</h4>
+            <p>
+              種花機制限制同一地點 5 分鐘內不可重複種花。點擊左側「<b>🔄 繞圈種花路線生成器</b>」，軟體會依目前時速自動計算單圈時間，確保花瓣 100% 播種！
+            </p>
+            <div class="onboarding-warning-box">
+              🚨 <b>防封禁第一法則（防橡皮筋回彈）</b>：<br>
+              在拔除傳輸線或點擊「恢復真實定位」之前，<b>務必先將手機上的遊戲 App 強制滑掉完全退出</b>！
+            </div>
+          </div>
+
+          <!-- Stepper Dots -->
+          <div class="onboarding-dots">
+            <span class="dot active" data-step="1"></span>
+            <span class="dot" data-step="2"></span>
+            <span class="dot" data-step="3"></span>
+            <span class="dot" data-step="4"></span>
+          </div>
+        </div>
+        <div class="modal-footer onboarding-footer">
+          <button id="skipOnboardingBtn" class="btn btn-outline">跳過教學</button>
+          <div class="onboarding-nav-btns">
+            <button id="prevOnboardingBtn" class="btn btn-outline hidden">上一步</button>
+            <button id="nextOnboardingBtn" class="btn btn-primary">下一步</button>
+            <button id="finishOnboardingBtn" class="btn btn-bloom hidden">開始探索 🌸</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Toast Notification Container -->
+    <div id="toastContainer" class="toast-container"></div>
+  </div>
+
+  <script src="/vendor/leaflet/leaflet.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>

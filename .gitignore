@@ -1,0 +1,11 @@
+/target
+*.log
+.DS_Store
+*.swp
+*.zip
+*.tar.gz
+*.exe
+bloomanywhere
+BloomAnywhere.app/
+*.app/
+
