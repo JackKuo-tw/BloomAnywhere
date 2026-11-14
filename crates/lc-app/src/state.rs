@@ -379,7 +379,8 @@ impl ActiveRoute {
             ret.pause();
         }
         self.runner.pause();
-        if self.pause_point.is_none() && self.return_runner.is_none() && !self.runner.is_finished() {
+        if self.pause_point.is_none() && self.return_runner.is_none() && !self.runner.is_finished()
+        {
             self.pause_point = Some(self.runner.current().on_path);
         }
     }

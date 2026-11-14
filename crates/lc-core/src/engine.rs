@@ -181,11 +181,8 @@ impl Mover {
             );
             (pt, h, self.lead_in_progress_m, self.lead_in_length_m)
         } else {
-            let (pt, _, h) = crate::geo::locate(
-                &self.lap_path,
-                &self.cum_lengths,
-                self.lap_progress_m,
-            );
+            let (pt, _, h) =
+                crate::geo::locate(&self.lap_path, &self.cum_lengths, self.lap_progress_m);
             (pt, h, self.lap_progress_m, self.lap_length_m)
         };
 

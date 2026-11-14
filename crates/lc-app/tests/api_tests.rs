@@ -284,7 +284,6 @@ async fn test_route_with_lead_in() {
     assert_eq!(route.lead_in[1], p1);
 }
 
-
 #[tokio::test]
 async fn test_gpx_import_and_export() {
     let (app, _state) = setup_test_app();

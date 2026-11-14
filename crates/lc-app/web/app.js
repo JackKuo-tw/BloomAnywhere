@@ -23,8 +23,10 @@ let flowerCircleLayer = null;
 
 // Route & Jump Planning State
 let twoSpotPlan = { start: null, end: null, plannedPath: [] };
+let twoSpotPlanSeq = 0;
 let multiSpotPoints = [];
 let multiSpotLeadIn = null;
+let multiSpotPlanSeq = 0;
 let jumpPoints = [];
 let currentJumpIndex = 0;
 let autoJumpActive = false;
@@ -800,6 +802,7 @@ async function setTwoSpotTarget(lat, lng) {
 async function planTwoSpotRoute() {
   if (!twoSpotPlan.start || !twoSpotPlan.end) return;
 
+  const seq = ++twoSpotPlanSeq;
   const snap = el('twoSpotSnapSelect').value;
   el('twoSpotRouteStats').textContent = '正在規劃路徑...';
 
@@ -815,6 +818,7 @@ async function planTwoSpotRoute() {
 
     if (res.ok) {
       const data = await res.json();
+      if (seq !== twoSpotPlanSeq || !twoSpotPlan.end) return;
       twoSpotPlan.plannedPath = data.path;
 
       if (twoSpotPolyline) {
@@ -940,6 +944,7 @@ function clearMultiSpotPoints() {
 }
 
 async function planMultiSpotRoute() {
+  const seq = ++multiSpotPlanSeq;
   if (multiSpotPoints.length < 2) {
     if (multiSpotPolyline) {
       map.removeLayer(multiSpotPolyline);
@@ -961,6 +966,7 @@ async function planMultiSpotRoute() {
 
     if (res.ok) {
       const data = await res.json();
+      if (seq !== multiSpotPlanSeq || multiSpotPoints.length < 2) return;
       if (multiSpotPolyline) {
         multiSpotPolyline.setLatLngs(data.path.map(p => [p.lat, p.lng]));
       } else {
