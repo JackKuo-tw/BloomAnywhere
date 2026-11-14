@@ -34,8 +34,8 @@ pub fn start_ticker(app_state: Arc<AppState>) -> tokio::task::JoinHandle<()> {
                 match state.mode {
                     AppMode::Route => {
                         if let Some(ref mut ar) = state.active_route {
-                            if !ar.runner.is_paused() && !ar.runner.is_finished() {
-                                let tick = ar.runner.step(dt);
+                            if !ar.is_paused() && !ar.is_finished() {
+                                let tick = ar.step(dt);
                                 state.position = Some(tick.position);
                                 state.heading_deg = tick.heading_deg;
                                 state.pushes += 1;

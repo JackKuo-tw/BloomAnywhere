@@ -1042,6 +1042,42 @@ body, html {
   }
 }
 
+/* Temporary Pause Point Marker Styles */
+.pause-anchor-wrap {
+  position: relative;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.pause-anchor-badge {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: #f59e0b;
+  color: #ffffff;
+  border: 2.5px solid #ffffff;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  z-index: 2;
+}
+
+.pause-anchor-ring {
+  position: absolute;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: rgba(245, 158, 11, 0.35);
+  animation: gpsPulse 2s infinite ease-out;
+  z-index: 1;
+}
+
 /* Leaflet Map Locate Control */
 .leaflet-control-locate a {
   display: flex;

@@ -205,6 +205,12 @@ pub async fn teleport(
             }
         }
 
+        if let Some(ref mut ar) = state.active_route {
+            if !ar.is_paused() && !ar.is_finished() {
+                ar.pause_and_mark();
+            }
+        }
+
         state.position = Some(target);
         state.mode = AppMode::Teleport;
         state.pushes += 1;
@@ -242,6 +248,8 @@ pub struct RouteStartReq {
     pub realistic: bool,
     #[serde(default = "default_snap_str")]
     pub snap: String, // "foot", "bike", "car", "straight"
+    #[serde(default)]
+    pub return_snap: Option<String>,
 }
 
 fn default_mode_str() -> String {
@@ -268,6 +276,8 @@ pub async fn route_start(
             "Speed must be positive".into(),
         ));
     }
+
+    let return_snap = body.return_snap.unwrap_or_else(|| body.snap.clone());
 
     // Plan route if snapped
     let planned = plan_route(&app_state.http_client, &body.points, &body.snap).await;
@@ -328,6 +338,7 @@ pub async fn route_start(
         let mut state = app_state.inner.write().await;
         state.position = Some(first_pos);
         state.mode = AppMode::Route;
+        state.joystick.active = false;
         state.speed_kmh = body.speed_kmh;
         state.active_route = Some(ActiveRoute {
             runner,
@@ -335,6 +346,11 @@ pub async fn route_start(
             lead_in: planned_lead_in,
             route_mode: body.mode,
             repeat: body.repeat,
+            snap: return_snap,
+            realistic: body.realistic,
+            pause_point: None,
+            return_runner: None,
+            return_path: Vec::new(),
         });
         state.pushes += 1;
         state.last_error = None;
@@ -349,6 +365,18 @@ pub async fn route_start(
     Ok(Json(view))
 }
 
+const RESUME_DIRECT_THRESHOLD_M: f64 = 4.0;
+const RETURN_STRAIGHT_THRESHOLD_M: f64 = 25.0;
+
+enum ResumePlanAction {
+    Done,
+    NeedReturnPath {
+        curr_pos: LatLng,
+        pause_pt: LatLng,
+        snap: String,
+    },
+}
+
 // POST /api/route/pause
 pub async fn route_pause(
     State(app_state): State<Arc<AppState>>,
@@ -356,7 +384,7 @@ pub async fn route_pause(
     {
         let mut state = app_state.inner.write().await;
         if let Some(ref mut ar) = state.active_route {
-            ar.runner.pause();
+            ar.pause_and_mark();
         }
     }
 
@@ -369,14 +397,120 @@ pub async fn route_pause(
     Ok(Json(view))
 }
 
+fn prepare_route_resume(state: &mut crate::state::InnerState) -> ResumePlanAction {
+    let curr_pos_opt = state.position;
+    let Some(ref mut ar) = state.active_route else {
+        return ResumePlanAction::Done;
+    };
+
+    if !ar.is_paused() {
+        state.joystick.active = false;
+        state.mode = AppMode::Route;
+        return ResumePlanAction::Done;
+    }
+
+    if let (Some(pause_pt), Some(curr_pos)) = (ar.pause_point, curr_pos_opt) {
+        if !ar.runner.is_finished() {
+            if let Some(ref mut ret) = ar.return_runner {
+                let drifted_from_return =
+                    haversine_m(curr_pos, ret.current().on_path) > RESUME_DIRECT_THRESHOLD_M;
+                if !drifted_from_return {
+                    ret.resume();
+                    state.joystick.active = false;
+                    state.mode = AppMode::Route;
+                    return ResumePlanAction::Done;
+                }
+            }
+
+            if haversine_m(curr_pos, pause_pt) > RESUME_DIRECT_THRESHOLD_M {
+                return ResumePlanAction::NeedReturnPath {
+                    curr_pos,
+                    pause_pt,
+                    snap: ar.snap.clone(),
+                };
+            }
+        }
+    }
+
+    ar.clear_pause_state();
+    ar.runner.resume();
+    state.joystick.active = false;
+    state.mode = AppMode::Route;
+    ResumePlanAction::Done
+}
+
 // POST /api/route/resume
 pub async fn route_resume(
     State(app_state): State<Arc<AppState>>,
 ) -> Result<Json<AppStateView>, AppError> {
-    {
+    let action = {
         let mut state = app_state.inner.write().await;
+        prepare_route_resume(&mut state)
+    };
+
+    if let ResumePlanAction::NeedReturnPath {
+        curr_pos,
+        pause_pt,
+        snap,
+    } = action
+    {
+        let dist = haversine_m(curr_pos, pause_pt);
+        let mut return_path = if dist < RETURN_STRAIGHT_THRESHOLD_M || snap == "straight" {
+            vec![curr_pos, pause_pt]
+        } else {
+            let planned = plan_route(&app_state.http_client, &[curr_pos, pause_pt], &snap).await;
+            planned.path
+        };
+
+        if return_path.is_empty() {
+            return_path = vec![curr_pos, pause_pt];
+        } else {
+            if haversine_m(curr_pos, return_path[0]) > 0.5 {
+                return_path.insert(0, curr_pos);
+            }
+            if let Some(&last) = return_path.last() {
+                if haversine_m(last, pause_pt) > 0.5 {
+                    return_path.push(pause_pt);
+                }
+            }
+            if return_path.len() < 2 {
+                return_path = vec![curr_pos, pause_pt];
+            }
+        }
+
+        let mut state = app_state.inner.write().await;
+        let curr_pos_now = state.position.unwrap_or(curr_pos);
+        if haversine_m(curr_pos_now, return_path[0]) > 0.5 {
+            return_path[0] = curr_pos_now;
+        }
+        let speed_kmh = state.speed_kmh.max(0.5);
+        let speed_variance = state.profile.speed_variance;
+        let jitter_m = state.profile.jitter_m;
+
         if let Some(ref mut ar) = state.active_route {
-            ar.runner.resume();
+            if ar.is_paused() && ar.pause_point == Some(pause_pt) {
+                let return_plan = MovementPlan {
+                    path: return_path.clone(),
+                    lead_in: Vec::new(),
+                    speed_kmh,
+                    mode: RouteMode::Once,
+                    repeat: Some(1),
+                    realistic: ar.realistic,
+                    speed_variance: if ar.realistic { speed_variance } else { 0.0 },
+                    jitter_m: if ar.realistic { jitter_m } else { 0.0 },
+                };
+                let seed = rand::random::<u64>();
+                let ret_runner = RouteRunner::new(return_plan, seed).map_err(|e| {
+                    AppError(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("Return route creation failed: {e:#}"),
+                    )
+                })?;
+                ar.return_runner = Some(ret_runner);
+                ar.return_path = return_path;
+                state.joystick.active = false;
+                state.mode = AppMode::Route;
+            }
         }
     }
 
@@ -432,7 +566,7 @@ pub async fn set_speed(
         let clamped = body.speed_kmh.min(state.profile.max_speed_kmh);
         state.speed_kmh = clamped;
         if let Some(ref mut ar) = state.active_route {
-            ar.runner.set_speed(clamped);
+            ar.set_speed(clamped);
         }
     }
 
@@ -461,6 +595,11 @@ pub async fn set_joystick(
         state.joystick.active = body.active;
         state.joystick.heading_deg = (body.heading_deg % 360.0 + 360.0) % 360.0;
         if body.active {
+            if let Some(ref mut ar) = state.active_route {
+                if !ar.is_paused() && !ar.is_finished() {
+                    ar.pause_and_mark();
+                }
+            }
             state.mode = AppMode::Joystick;
             state.heading_deg = state.joystick.heading_deg;
         } else if state.mode == AppMode::Joystick {

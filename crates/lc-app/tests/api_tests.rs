@@ -474,3 +474,285 @@ async fn test_locate_ip_endpoint_routed() {
         resp.status()
     );
 }
+
+async fn post_json(app: &axum::Router, uri: &str, body: Value) -> AppStateView {
+    let req = Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    serde_json::from_slice(&bytes).unwrap()
+}
+
+async fn post_empty(app: &axum::Router, uri: &str) -> AppStateView {
+    let req = Request::builder()
+        .method("POST")
+        .uri(uri)
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    serde_json::from_slice(&bytes).unwrap()
+}
+
+#[tokio::test]
+async fn test_route_pause_manual_move_and_resume_at_pause_point() {
+    let (app, state) = setup_test_app();
+    let p1 = LatLng::new(25.033964, 121.564468);
+    let p2 = LatLng::new(25.035000, 121.564468);
+
+    // 1. Start route
+    post_json(
+        &app,
+        "/api/route/start",
+        json!({
+            "points": [p1, p2],
+            "speed_kmh": 36.0,
+            "mode": "once",
+            "snap": "straight"
+        }),
+    )
+    .await;
+
+    // Advance 2s (20m along route)
+    {
+        let mut inner = state.inner.write().await;
+        let tick = inner
+            .active_route
+            .as_mut()
+            .unwrap()
+            .step(std::time::Duration::from_secs(2));
+        inner.position = Some(tick.position);
+    }
+
+    // 2. Pause -> sets temporary pause_point
+    let view = post_empty(&app, "/api/route/pause").await;
+    let route = view.route.expect("route exists");
+    assert!(route.paused);
+    let pause_pt = route.pause_point.expect("pause_point should be marked");
+
+    // 3. User manually moves with joystick then releases (mode becomes Idle)
+    let view = post_json(
+        &app,
+        "/api/joystick",
+        json!({ "active": true, "heading_deg": 90.0 }),
+    )
+    .await;
+    assert_eq!(view.mode, bloomanywhere::state::AppMode::Joystick);
+    let view = post_json(
+        &app,
+        "/api/joystick",
+        json!({ "active": false, "heading_deg": 90.0 }),
+    )
+    .await;
+    assert_eq!(view.mode, bloomanywhere::state::AppMode::Idle);
+
+    // 4. User manually returns right back to pause_pt (within 4m) and resumes
+    post_json(
+        &app,
+        "/api/teleport",
+        json!({ "lat": pause_pt.lat, "lng": pause_pt.lng }),
+    )
+    .await;
+
+    let view = post_empty(&app, "/api/route/resume").await;
+    // Must switch back to AppMode::Route instead of freezing in Teleport/Idle!
+    assert_eq!(view.mode, bloomanywhere::state::AppMode::Route);
+    let route = view.route.expect("route exists");
+    assert!(!route.paused);
+    assert!(!route.returning_to_pause);
+    assert!(route.pause_point.is_none());
+}
+
+#[tokio::test]
+async fn test_route_pause_walk_away_then_resume_walks_back_to_pause_point() {
+    let (app, state) = setup_test_app();
+    let p1 = LatLng::new(25.033964, 121.564468);
+    let p2 = LatLng::new(25.036000, 121.564468);
+
+    // Start route at 36 km/h (10 m/s)
+    post_json(
+        &app,
+        "/api/route/start",
+        json!({
+            "points": [p1, p2],
+            "speed_kmh": 36.0,
+            "mode": "once",
+            "snap": "straight"
+        }),
+    )
+    .await;
+
+    // Advance 2s (20m north)
+    {
+        let mut inner = state.inner.write().await;
+        let tick = inner
+            .active_route
+            .as_mut()
+            .unwrap()
+            .step(std::time::Duration::from_secs(2));
+        inner.position = Some(tick.position);
+    }
+
+    // Pause and verify pause_point
+    let view = post_empty(&app, "/api/route/pause").await;
+    let route = view.route.unwrap();
+    let pause_pt = route.pause_point.unwrap();
+    let paused_progress = route.lap_progress_m;
+    assert!((paused_progress - 20.0).abs() < 0.1);
+
+    // Move ~50m east away from pause_pt
+    let off_route = lc_core::geo::destination(pause_pt, 90.0, 50.0);
+    post_json(
+        &app,
+        "/api/teleport",
+        json!({ "lat": off_route.lat, "lng": off_route.lng }),
+    )
+    .await;
+
+    // Resume: should plan return path from off_route back to pause_pt
+    let view = post_empty(&app, "/api/route/resume").await;
+    assert_eq!(view.mode, bloomanywhere::state::AppMode::Route);
+    let route = view.route.unwrap();
+    assert!(!route.paused);
+    assert!(route.returning_to_pause);
+    assert_eq!(route.pause_point, Some(pause_pt));
+    assert!(route.return_path.len() >= 2);
+    assert!(lc_core::geo::haversine_m(route.return_path[0], off_route) < 0.5);
+    assert!(lc_core::geo::haversine_m(*route.return_path.last().unwrap(), pause_pt) < 0.5);
+
+    // Step 2s (20m of 50m): still returning, main route progress frozen
+    {
+        let mut inner = state.inner.write().await;
+        let tick = inner
+            .active_route
+            .as_mut()
+            .unwrap()
+            .step(std::time::Duration::from_secs(2));
+        inner.position = Some(tick.position);
+        let view = inner.to_view();
+        let r = view.route.unwrap();
+        assert!(r.returning_to_pause);
+        assert!((r.lap_progress_m - paused_progress).abs() < 0.01);
+        assert!(lc_core::geo::haversine_m(tick.position, pause_pt) < 31.0);
+    }
+
+    // Step 3.5s (35m): arrives at pause_pt, clears return state, resumes main route
+    {
+        let mut inner = state.inner.write().await;
+        let tick = inner
+            .active_route
+            .as_mut()
+            .unwrap()
+            .step(std::time::Duration::from_millis(3500));
+        inner.position = Some(tick.position);
+        let view = inner.to_view();
+        let r = view.route.unwrap();
+        assert!(!r.returning_to_pause);
+        assert!(r.pause_point.is_none());
+        assert!(r.return_path.is_empty());
+        assert!(!r.paused);
+    }
+
+    // Step 1s more: main route now advances past paused_progress!
+    {
+        let mut inner = state.inner.write().await;
+        let tick = inner
+            .active_route
+            .as_mut()
+            .unwrap()
+            .step(std::time::Duration::from_secs(1));
+        inner.position = Some(tick.position);
+        let view = inner.to_view();
+        let r = view.route.unwrap();
+        assert!(r.lap_progress_m > paused_progress + 9.0);
+    }
+}
+
+#[tokio::test]
+async fn test_joystick_autopauses_route_and_preserves_pause_point_mid_return() {
+    let (app, state) = setup_test_app();
+    let p1 = LatLng::new(25.033964, 121.564468);
+    let p2 = LatLng::new(25.036000, 121.564468);
+
+    post_json(
+        &app,
+        "/api/route/start",
+        json!({
+            "points": [p1, p2],
+            "speed_kmh": 36.0,
+            "mode": "once",
+            "snap": "straight"
+        }),
+    )
+    .await;
+
+    // Advance 1s along route
+    {
+        let mut inner = state.inner.write().await;
+        let tick = inner
+            .active_route
+            .as_mut()
+            .unwrap()
+            .step(std::time::Duration::from_secs(1));
+        inner.position = Some(tick.position);
+    }
+
+    // Activate joystick directly without clicking Pause first
+    let view = post_json(
+        &app,
+        "/api/joystick",
+        json!({ "active": true, "heading_deg": 90.0 }),
+    )
+    .await;
+    assert_eq!(view.mode, bloomanywhere::state::AppMode::Joystick);
+    let route = view.route.unwrap();
+    assert!(route.paused);
+    let original_pause_pt = route.pause_point.expect("auto-marked pause point");
+
+    // Release joystick and move 40m away
+    post_json(
+        &app,
+        "/api/joystick",
+        json!({ "active": false, "heading_deg": 90.0 }),
+    )
+    .await;
+    let away1 = lc_core::geo::destination(original_pause_pt, 90.0, 40.0);
+    post_json(
+        &app,
+        "/api/teleport",
+        json!({ "lat": away1.lat, "lng": away1.lng }),
+    )
+    .await;
+
+    // Resume -> returning_to_pause
+    let view = post_empty(&app, "/api/route/resume").await;
+    assert!(view.route.unwrap().returning_to_pause);
+
+    // Pause mid-return and verify original pause point is preserved
+    let view = post_empty(&app, "/api/route/pause").await;
+    let route = view.route.unwrap();
+    assert!(route.paused);
+    assert_eq!(route.pause_point, Some(original_pause_pt));
+
+    // Move further away while paused mid-return, then resume -> replans to original_pause_pt
+    let away2 = lc_core::geo::destination(original_pause_pt, 180.0, 60.0);
+    post_json(
+        &app,
+        "/api/teleport",
+        json!({ "lat": away2.lat, "lng": away2.lng }),
+    )
+    .await;
+    let view = post_empty(&app, "/api/route/resume").await;
+    assert_eq!(view.mode, bloomanywhere::state::AppMode::Route);
+    let route = view.route.unwrap();
+    assert!(route.returning_to_pause);
+    assert_eq!(route.pause_point, Some(original_pause_pt));
+    assert!(lc_core::geo::haversine_m(route.return_path[0], away2) < 0.5);
+    assert!(lc_core::geo::haversine_m(*route.return_path.last().unwrap(), original_pause_pt) < 0.5);
+}

@@ -27,7 +27,7 @@ pub async fn search_location(
     let res = client
         .get(url)
         .query(&[("format", "json"), ("q", query), ("limit", "10")])
-        .header("User-Agent", "BloomAnywhere/0.1.0")
+        .header("User-Agent", "BloomAnywhere/0.1.1")
         .timeout(Duration::from_secs(5))
         .send()
         .await?;

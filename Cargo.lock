@@ -222,7 +222,7 @@ dependencies = [
 
 [[package]]
 name = "bloomanywhere"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -1065,7 +1065,7 @@ checksum = "20870f649af7073d53e38067b2a84312175d56ea15217e1b15bc83506ec50afb"
 
 [[package]]
 name = "lc-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "rand 0.8.8",
@@ -1075,7 +1075,7 @@ dependencies = [
 
 [[package]]
 name = "lc-device"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-trait",

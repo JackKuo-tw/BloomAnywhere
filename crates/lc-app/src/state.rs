@@ -34,6 +34,12 @@ pub struct RouteStateView {
     pub route_mode: String,
     pub paused: bool,
     pub finished: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pause_point: Option<LatLng>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub return_path: Vec<LatLng>,
+    #[serde(default)]
+    pub returning_to_pause: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -343,6 +349,69 @@ pub struct ActiveRoute {
     pub lead_in: Vec<LatLng>,
     pub route_mode: String,
     pub repeat: Option<u32>,
+    pub snap: String,
+    pub realistic: bool,
+    pub pause_point: Option<LatLng>,
+    pub return_runner: Option<RouteRunner>,
+    pub return_path: Vec<LatLng>,
+}
+
+impl ActiveRoute {
+    pub fn is_paused(&self) -> bool {
+        match &self.return_runner {
+            Some(ret) => ret.is_paused(),
+            None => self.runner.is_paused(),
+        }
+    }
+
+    pub fn is_finished(&self) -> bool {
+        self.return_runner.is_none() && self.runner.is_finished()
+    }
+
+    pub fn is_returning(&self) -> bool {
+        self.return_runner.is_some()
+    }
+
+    /// Pause the route (or active return walk) and record a temporary pause marker
+    /// on the main route if one isn't already recorded.
+    pub fn pause_and_mark(&mut self) {
+        if let Some(ref mut ret) = self.return_runner {
+            ret.pause();
+        }
+        self.runner.pause();
+        if self.pause_point.is_none() && self.return_runner.is_none() && !self.runner.is_finished() {
+            self.pause_point = Some(self.runner.current().on_path);
+        }
+    }
+
+    pub fn clear_pause_state(&mut self) {
+        self.pause_point = None;
+        self.return_runner = None;
+        self.return_path.clear();
+    }
+
+    pub fn set_speed(&mut self, kmh: f64) {
+        self.runner.set_speed(kmh);
+        if let Some(ref mut ret) = self.return_runner {
+            ret.set_speed(kmh);
+        }
+    }
+
+    /// Advance either the return-to-pause runner or the main route runner.
+    pub fn step(&mut self, dt: Duration) -> MoverTick {
+        if let Some(ref mut ret) = self.return_runner {
+            let tick = ret.step(dt);
+            if tick.finished || ret.is_finished() {
+                self.return_runner = None;
+                self.return_path.clear();
+                self.pause_point = None;
+                self.runner.resume();
+            }
+            tick
+        } else {
+            self.runner.step(dt)
+        }
+    }
 }
 
 pub struct JoystickState {
@@ -391,8 +460,11 @@ impl InnerState {
                 lap: tick.lap,
                 repeat: ar.repeat,
                 route_mode: ar.route_mode.clone(),
-                paused: ar.runner.is_paused(),
-                finished: ar.runner.is_finished(),
+                paused: ar.is_paused(),
+                finished: ar.is_finished(),
+                pause_point: ar.pause_point,
+                return_path: ar.return_path.clone(),
+                returning_to_pause: ar.is_returning(),
             }
         });
 

@@ -17,6 +17,8 @@ let multiSpotPolyline = null;
 let jumpMarkers = [];
 let activeRoutePolyline = null;
 let activeLeadInPolyline = null;
+let activeReturnPolyline = null;
+let pausePointMarker = null;
 let flowerCircleLayer = null;
 
 // Route & Jump Planning State
@@ -334,6 +336,21 @@ function createPinIcon(color = '#e63946') {
   });
 }
 
+function createPausePointIcon() {
+  const html = `
+    <div class="pause-anchor-wrap">
+      <div class="pause-anchor-ring"></div>
+      <div class="pause-anchor-badge">⏸</div>
+    </div>
+  `;
+  return L.divIcon({
+    html,
+    className: 'custom-pause-pin',
+    iconSize: [28, 28],
+    iconAnchor: [14, 14],
+  });
+}
+
 // --- WebSocket Connection ---
 function initWebSocket() {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -405,7 +422,7 @@ function updateAppState(state) {
 
   // 4. Status bar & Heading
   el('statusHeadingVal').textContent = `${Math.round(state.heading_deg)}°`;
-  el('statusModeVal').textContent = translateMode(state.mode);
+  el('statusModeVal').textContent = translateMode(state.mode, state.route);
   el('statusPushesVal').textContent = state.pushes;
 
   // 5. Speed
@@ -439,10 +456,47 @@ function updateAppState(state) {
       activeLeadInPolyline = null;
     }
 
+    if (state.route.return_path && state.route.return_path.length >= 2) {
+      const retCoords = state.route.return_path.map(p => [p.lat, p.lng]);
+      if (!activeReturnPolyline) {
+        activeReturnPolyline = L.polyline(retCoords, {
+          color: '#f59e0b',
+          weight: 4,
+          dashArray: '6, 8',
+          opacity: 0.9,
+        }).addTo(map);
+      } else {
+        activeReturnPolyline.setLatLngs(retCoords);
+      }
+    } else if (activeReturnPolyline) {
+      map.removeLayer(activeReturnPolyline);
+      activeReturnPolyline = null;
+    }
+
+    if (state.route.pause_point) {
+      const pp = state.route.pause_point;
+      const popupText = `<b>⏸ 暫停標記點</b><br>${pp.lat.toFixed(6)}, ${pp.lng.toFixed(6)}<br><small>按「繼續」將走回此處繼續路線</small>`;
+      if (!pausePointMarker) {
+        pausePointMarker = L.marker([pp.lat, pp.lng], {
+          icon: createPausePointIcon(),
+          zIndexOffset: 600,
+        }).addTo(map);
+        pausePointMarker.bindPopup(popupText);
+      } else {
+        pausePointMarker.setLatLng([pp.lat, pp.lng]);
+        pausePointMarker.setPopupContent(popupText);
+      }
+    } else if (pausePointMarker) {
+      map.removeLayer(pausePointMarker);
+      pausePointMarker = null;
+    }
+
     const lapText = state.route.repeat ? `${state.route.lap + 1} / ${state.route.repeat}` : `${state.route.lap + 1} (無限)`;
     const progressKm = (state.route.lap_progress_m / 1000).toFixed(2);
     const totalKm = (state.route.lap_length_m / 1000).toFixed(2);
-    el('statusLapVal').textContent = `第 ${lapText} 圈 (${progressKm} / ${totalKm} km)`;
+    el('statusLapVal').textContent = state.route.returning_to_pause
+      ? `↩️ 返回暫停點中... (第 ${lapText} 圈)`
+      : `第 ${lapText} 圈 (${progressKm} / ${totalKm} km)`;
 
     // Update buttons in Two-spot and Multi-spot
     const isPaused = state.route.paused;
@@ -463,6 +517,14 @@ function updateAppState(state) {
     if (activeLeadInPolyline) {
       map.removeLayer(activeLeadInPolyline);
       activeLeadInPolyline = null;
+    }
+    if (activeReturnPolyline) {
+      map.removeLayer(activeReturnPolyline);
+      activeReturnPolyline = null;
+    }
+    if (pausePointMarker) {
+      map.removeLayer(pausePointMarker);
+      pausePointMarker = null;
     }
     el('statusLapVal').textContent = '-';
 
@@ -488,10 +550,13 @@ function updateAppState(state) {
   }
 }
 
-function translateMode(mode) {
+function translateMode(mode, route) {
   switch (mode) {
     case 'teleport': return '📍 傳送中';
-    case 'route': return '🚶 路線巡航中';
+    case 'route':
+      if (route && route.returning_to_pause) return '↩️ 返回暫停點中';
+      if (route && route.paused) return '⏸ 路線暫停中';
+      return '🚶 路線巡航中';
     case 'joystick': return '🎮 搖桿操控中';
     default: return '閒置';
   }
@@ -794,6 +859,7 @@ async function startTwoSpotRoute() {
         repeat: mode === 'once' ? null : null,
         realistic: realistic,
         snap: 'straight', // Already planned
+        return_snap: el('twoSpotSnapSelect').value,
       }),
     });
     if (res.ok) {

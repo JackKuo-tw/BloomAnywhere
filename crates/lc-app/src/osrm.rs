@@ -120,7 +120,7 @@ pub async fn plan_route(
     match client
         .get(&url)
         .timeout(Duration::from_secs(5))
-        .header("User-Agent", "BloomAnywhere/0.1.0")
+        .header("User-Agent", "BloomAnywhere/0.1.1")
         .send()
         .await
     {
